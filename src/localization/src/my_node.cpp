@@ -1,49 +1,59 @@
 #include "rclcpp/rclcpp.hpp"
-#include "geometry_msgs/msg/twist.hpp"
+#include "sensor_msgs/msg/imu.hpp"
+#include "nav_msgs/msg/odometry.hpp"
 
-class CmdVelPublisher : public rclcpp::Node
+#include <Eigen/Dense>
+
+#include "message_filters/subscriber.h"
+#include "message_filters/time_synchronizer.h"
+
+class KalmanFilter : public rclcpp::Node
 {
 public:
-  CmdVelPublisher()
-  : Node("cmd_vel_publisher")
+  KalmanFilter() : Node("kalman_filter")
   {
-    // Create a publisher on /cmd_vel, queue size 10
-    publisher_ = this->create_publisher<geometry_msgs::msg::Twist>(
-      "/cmd_vel", 10);
+    imu_sub_.subscribe(this, "/imu");
+    odom_sub_.subscribe(this, "/odom");
 
-    // Publish at 10 Hz
-    timer_ = this->create_wall_timer(
-      std::chrono::milliseconds(100),
-      std::bind(&CmdVelPublisher::on_timer, this));
+    synchronizer_ = std::make_shared<message_filters::TimeSynchronizer<sensor_msgs::msg::Imu, nav_msgs::msg::Odometry>>(imu_sub_, odom_sub_, 10);
+
+    synchronizer_->registerCallback(
+      std::bind(&KalmanFilter::synchronized_callback, this,
+                std::placeholders::_1, std::placeholders::_2));
+
+    RCLCPP_INFO(this->get_logger(), "KalmanFilter node started. Synchronizing /imu and /odom.");
   }
 
 private:
-  void on_timer()
+  void synchronized_callback(
+    const sensor_msgs::msg::Imu::ConstSharedPtr imu_msg,
+    const nav_msgs::msg::Odometry::ConstSharedPtr odom_msg)
   {
-    auto msg = geometry_msgs::msg::Twist();
-    // Set some velocities; here we go forward at 0.5 m/s
-    msg.linear.x = 0.5;
-    msg.linear.y = 0.0;
-    msg.linear.z = 0.0;
-    // No rotation
-    msg.angular.x = 0.0;
-    msg.angular.y = 0.0;
-    msg.angular.z = 0.0;
+    RCLCPP_INFO(this->get_logger(),
+                "--- Synchronized Data Received (Timestamp: %.4f) ---",
+                rclcpp::Time(imu_msg->header.stamp).seconds());
 
     RCLCPP_INFO(this->get_logger(),
-                "Publishing cmd_vel: linear.x=%.2f",
-                msg.linear.x);
-    publisher_->publish(msg);
+                "IMU Orientation: (x=%.2f, y=%.2f, z=%.2f, w=%.2f)",
+                imu_msg->orientation.x, imu_msg->orientation.y,
+                imu_msg->orientation.z, imu_msg->orientation.w);
+
+    RCLCPP_INFO(this->get_logger(),
+                "Odometry Pose: (x=%.2f, y=%.2f, z=%.2f)",
+                odom_msg->pose.pose.position.x, odom_msg->pose.pose.position.y,
+                odom_msg->pose.pose.position.z);
+    RCLCPP_INFO(this->get_logger(), "----------------------------------------");
   }
 
-  rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr publisher_;
-  rclcpp::TimerBase::SharedPtr timer_;
+  message_filters::Subscriber<sensor_msgs::msg::Imu> imu_sub_;
+  message_filters::Subscriber<nav_msgs::msg::Odometry> odom_sub_;
+  std::shared_ptr<message_filters::TimeSynchronizer<sensor_msgs::msg::Imu, nav_msgs::msg::Odometry>>synchronizer_;
 };
 
-int main(int argc, char * argv[])
+int main(int argc, char* argv[])
 {
   rclcpp::init(argc, argv);
-  rclcpp::spin(std::make_shared<CmdVelPublisher>());
+  rclcpp::spin(std::make_shared<KalmanFilter>());
   rclcpp::shutdown();
   return 0;
 }
