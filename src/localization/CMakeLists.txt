@@ -12,9 +12,10 @@ find_package(tf2_geometry_msgs REQUIRED)
 
 find_package(Eigen3 REQUIRED CONFIG)
 
-add_executable(cmd_vel_publisher src/my_node.cpp)
-ament_target_dependencies(
-  cmd_vel_publisher
+# Add KalmanFilter executable
+add_executable(kalman_filter src/kalmanfilter.cpp)
+
+ament_target_dependencies(kalman_filter
   rclcpp
   geometry_msgs
   sensor_msgs
@@ -23,10 +24,30 @@ ament_target_dependencies(
   tf2
   tf2_geometry_msgs
 )
+target_link_libraries(kalman_filter Eigen3::Eigen)
 
 install(
-  TARGETS cmd_vel_publisher
+  TARGETS 
+    kalman_filter
   DESTINATION lib/${PROJECT_NAME}
+)
+
+# Install launch files
+install(DIRECTORY
+  launch
+  DESTINATION share/${PROJECT_NAME}/
+)
+
+# Install RViz configuration
+install(DIRECTORY
+  rviz
+  DESTINATION share/${PROJECT_NAME}/
+)
+
+# Install map files
+install(DIRECTORY
+  map
+  DESTINATION share/${PROJECT_NAME}/
 )
 
 ament_package()
