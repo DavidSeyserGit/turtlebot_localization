@@ -26,9 +26,24 @@ ament_target_dependencies(kalman_filter
 )
 target_link_libraries(kalman_filter Eigen3::Eigen)
 
+# Add EKF node executable
+add_executable(ekf_node src/ekf_node.cpp)
+
+ament_target_dependencies(ekf_node
+  rclcpp
+  geometry_msgs
+  sensor_msgs
+  nav_msgs
+  message_filters
+  tf2
+  tf2_geometry_msgs
+)
+target_link_libraries(ekf_node Eigen3::Eigen)
+
 install(
   TARGETS 
     kalman_filter
+    ekf_node
   DESTINATION lib/${PROJECT_NAME}
 )
 
