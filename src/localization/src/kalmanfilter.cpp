@@ -86,32 +86,29 @@ private:
   rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr filtered_state_pub_;
 
   void initializeKalmanFilter() {
-    // Initialize state vector [x, vx, y, vy, theta, omega]
+    // Initialize state vector
     state_ = Eigen::VectorXd::Zero(STATE_SIZE);
-    covariance_ = Eigen::MatrixXd::Identity(STATE_SIZE, STATE_SIZE);
-
-    // Process noise - how much we trust our motion model
-    Q_ = Eigen::MatrixXd::Identity(STATE_SIZE, STATE_SIZE);
-    Q_.diagonal() << 0.1, 0.2, 0.1, 0.2, 0.1, 0.2;  // Higher noise for velocities
-
-    // Measurement noise - how much we trust our sensors
-    R_ = Eigen::MatrixXd::Identity(MEASUREMENT_SIZE, MEASUREMENT_SIZE);
-    R_.diagonal() << 0.1, 0.1, 0.1;  // Noise for [vx, vy, omega] measurements
-
-    // State transition matrix (will be updated with dt in predict step)
+    
+    // Initialize covariance matrix
+    covariance_ = Eigen::MatrixXd::Identity(STATE_SIZE, STATE_SIZE) * 0.1;
+    
+    // Initialize process noise covariance
+    Q_ = Eigen::MatrixXd::Identity(STATE_SIZE, STATE_SIZE) * 0.1;
+    
+    // Initialize measurement noise covariance
+    R_ = Eigen::MatrixXd::Identity(6, 6) * 0.1;  // 6x6 for [x, y, theta, vx, vy, omega]
+    
+    // Initialize state transition matrix
     A_ = Eigen::MatrixXd::Identity(STATE_SIZE, STATE_SIZE);
-
-    // Control input matrix (will be updated with dt in predict step)
+    
+    // Initialize control input matrix
     B_ = Eigen::MatrixXd::Zero(STATE_SIZE, CONTROL_SIZE);
+    
+    // Initialize observation matrix
+    H_ = Eigen::MatrixXd::Identity(6, STATE_SIZE);  // 6x6 for measuring all states
     
     // Initialize control input vector
     u_ = Eigen::VectorXd::Zero(CONTROL_SIZE);
-
-    // Observation matrix - maps state to measurements [vx, vy, omega]
-    H_ = Eigen::MatrixXd::Zero(MEASUREMENT_SIZE, STATE_SIZE);
-    H_(0, 1) = 1.0;  // Measure vx (state index 1)
-    H_(1, 3) = 1.0;  // Measure vy (state index 3)
-    H_(2, 5) = 1.0;  // Measure omega (state index 5)
   }
 
   void cmdVelCallback(const geometry_msgs::msg::Twist::SharedPtr msg)
@@ -191,31 +188,17 @@ private:
 
     // Update state transition matrix with current dt
     A_ = Eigen::MatrixXd::Identity(STATE_SIZE, STATE_SIZE);
-    A_(0, 1) = dt;  // x += vx * dt
-    A_(2, 3) = dt;  // y += vy * dt
-    A_(4, 5) = dt;  // theta += omega * dt
-
-    //A:
-    // 1 dt 0 0 0 0
-    // 0 1 0 0 0 0
-    // 0 0 1 dt 0 0
-    // 0 0 0 1 0 0
-    // 0 0 0 0 1 dt
-    // 0 0 0 0 0 1
+    A_(0, 1) = dt * cos(theta);  // x += vx * cos(theta) * dt
+    A_(0, 3) = -dt * sin(theta); // x += vy * -sin(theta) * dt
+    A_(2, 1) = dt * sin(theta);  // y += vx * sin(theta) * dt
+    A_(2, 3) = dt * cos(theta);  // y += vy * cos(theta) * dt
+    A_(4, 5) = dt;               // theta += omega * dt
 
     // Update control input matrix with current pose
     B_ = Eigen::MatrixXd::Zero(STATE_SIZE, CONTROL_SIZE);
     B_(1, 0) = cos(theta);  // vx = v * cos(theta)
     B_(3, 0) = sin(theta);  // vy = v * sin(theta)
     B_(5, 1) = 1.0;        // omega = omega_cmd
-
-    //B:
-    // 0 0
-    // cos(theta) 0
-    // 0 0
-    // sin(theta) 0
-    // 0 0
-    // 1 0
 
     // Predict state
     state_ = A_ * state_ + B_ * u_;
@@ -243,20 +226,24 @@ private:
     double roll, pitch, yaw;
     tf2::Matrix3x3(q).getRPY(roll, pitch, yaw);
 
-    // Create measurement vector - velocities and pose
-    Eigen::VectorXd measurement(MEASUREMENT_SIZE);
-    measurement << odom_msg->twist.twist.linear.x,   // vx from odometry
-                  odom_msg->twist.twist.linear.y,    // vy from odometry
-                  imu_msg->angular_velocity.z;       // omega from IMU
+    // Create measurement vector - position, velocities, and orientation
+    Eigen::VectorXd measurement(6);  // [x, y, theta, vx, vy, omega]
+    measurement << odom_msg->pose.pose.position.x,   // x position
+                  odom_msg->pose.pose.position.y,   // y position
+                  yaw,                              // theta
+                  odom_msg->twist.twist.linear.x,   // vx from odometry
+                  odom_msg->twist.twist.linear.y,   // vy from odometry
+                  imu_msg->angular_velocity.z;      // omega from IMU
 
-    // Update observation matrix to include pose measurements
-    H_ = Eigen::MatrixXd::Zero(MEASUREMENT_SIZE, STATE_SIZE);
-    H_(0, 1) = 1.0;  // Measure vx (state index 1)
-    H_(1, 3) = 1.0;  // Measure vy (state index 3)
-    H_(2, 5) = 1.0;  // Measure omega (state index 5)
+    // Update observation matrix to include all measurements
+    H_ = Eigen::MatrixXd::Identity(6, STATE_SIZE);
 
     // Calculate innovation (measurement - prediction)
-    Eigen::VectorXd innovation = measurement - (H_ * state_);
+    Eigen::VectorXd innovation = measurement - H_ * state_;
+
+    // Normalize angle difference
+    while (innovation(2) > M_PI) innovation(2) -= 2 * M_PI;
+    while (innovation(2) < -M_PI) innovation(2) += 2 * M_PI;
 
     // Calculate Kalman gain
     Eigen::MatrixXd S = H_ * covariance_ * H_.transpose() + R_;
@@ -267,13 +254,13 @@ private:
 
     // Update covariance (Joseph form for numerical stability)
     Eigen::MatrixXd I = Eigen::MatrixXd::Identity(STATE_SIZE, STATE_SIZE);
-    covariance_ = (I - K * H_) * covariance_;
+    covariance_ = (I - K * H_) * covariance_ * (I - K * H_).transpose() + K * R_ * K.transpose();
 
     normalizeYaw();
     
     RCLCPP_DEBUG(this->get_logger(), 
                  "Updated with measurements: vx=%.3f, vy=%.3f, omega=%.3f, yaw=%.3f",
-                 measurement(0), measurement(1), measurement(2), yaw);
+                 measurement(3), measurement(4), measurement(5), yaw);
   }
 
   void normalizeYaw()
@@ -293,8 +280,8 @@ private:
     filtered_odom.child_frame_id = "base_footprint";
 
     // Set position (integrated from velocities)
-    filtered_odom.pose.pose.position.x = state_(0);
-    filtered_odom.pose.pose.position.y = state_(1);
+    filtered_odom.pose.pose.position.x = state_(0);  // x position
+    filtered_odom.pose.pose.position.y = state_(2);  // y position
     filtered_odom.pose.pose.position.z = 0.0;
 
     // Set orientation
@@ -306,9 +293,9 @@ private:
     filtered_odom.pose.pose.orientation.w = q.w();
 
     // Set velocities (filtered)
-    filtered_odom.twist.twist.linear.x = state_(3);
-    filtered_odom.twist.twist.linear.y = state_(4);
-    filtered_odom.twist.twist.angular.z = state_(5);
+    filtered_odom.twist.twist.linear.x = state_(1);  // vx
+    filtered_odom.twist.twist.linear.y = state_(3);  // vy
+    filtered_odom.twist.twist.angular.z = state_(5); // omega
 
     // Set covariance matrices
     for (int i = 0; i < 6; i++) {
