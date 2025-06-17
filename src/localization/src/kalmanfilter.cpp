@@ -62,7 +62,7 @@ private:
   Eigen::MatrixXd Q_;            // Process noise covariance
   Eigen::MatrixXd A_;            // State transition matrix
   Eigen::MatrixXd B_;            // Control input matrix
-  Eigen::MatrixXd H_;            // Observation matrix
+  Eigen::MatrixXd C_;            // Observation matrix
   Eigen::VectorXd u_;            // Control input vector
 
   const int STATE_SIZE = 6;      // Size of state vector
@@ -105,7 +105,7 @@ private:
     B_ = Eigen::MatrixXd::Zero(STATE_SIZE, CONTROL_SIZE);
     
     // Initialize observation matrix
-    H_ = Eigen::MatrixXd::Identity(6, STATE_SIZE);  // 6x6 for measuring all states
+    C_ = Eigen::MatrixXd::Identity(6, STATE_SIZE);  // 6x6 for measuring all states
     
     // Initialize control input vector
     u_ = Eigen::VectorXd::Zero(CONTROL_SIZE);
@@ -215,47 +215,64 @@ private:
   }
 
   void update(
-      const sensor_msgs::msg::Imu::ConstSharedPtr imu_msg,
-      const nav_msgs::msg::Odometry::ConstSharedPtr odom_msg)
+    const sensor_msgs::msg::Imu::ConstSharedPtr imu_msg,
+    const nav_msgs::msg::Odometry::ConstSharedPtr odom_msg)
   {
-    // Extract yaw from quaternion for measurement
-    tf2::Quaternion q(
-      odom_msg->pose.pose.orientation.x,
-      odom_msg->pose.pose.orientation.y,
-      odom_msg->pose.pose.orientation.z,
-      odom_msg->pose.pose.orientation.w);
-    double roll, pitch, yaw;
-    tf2::Matrix3x3(q).getRPY(roll, pitch, yaw);
+      // Extract yaw from quaternion for measurement
+      tf2::Quaternion q(
+          odom_msg->pose.pose.orientation.x,
+          odom_msg->pose.pose.orientation.y,
+          odom_msg->pose.pose.orientation.z,
+          odom_msg->pose.pose.orientation.w);
+      double roll, pitch, yaw;
+      tf2::Matrix3x3(q).getRPY(roll, pitch, yaw);
 
-    // Create measurement vector - position, velocities, and orientation
-    Eigen::VectorXd measurement(6);  // [x, y, theta, vx, vy, omega]
-    measurement << odom_msg->pose.pose.position.x,   // x position
-                  odom_msg->pose.pose.position.y,   // y position
-                  yaw,                              // theta
-                  odom_msg->twist.twist.linear.x,   // vx from odometry
-                  odom_msg->twist.twist.linear.y,   // vy from odometry
-                  imu_msg->angular_velocity.z;      // omega from IMU
+      // Create measurement vector z_t
+      Eigen::VectorXd z_t(6);  // [x, y, theta, vx, vy, omega]
+      z_t << odom_msg->pose.pose.position.x,   // x position
+             odom_msg->pose.pose.position.y,   // y position
+             yaw,                              // theta
+             odom_msg->twist.twist.linear.x,   // vx from odometry
+             odom_msg->twist.twist.linear.y,   // vy from odometry
+             imu_msg->angular_velocity.z;      // omega from IMU
 
-    // Update observation matrix to include all measurements
-    H_ = Eigen::MatrixXd::Identity(6, STATE_SIZE);
+      // Store predicted state and covariance (mu_bar_t, Sigma_bar_t)
+      Eigen::VectorXd mu_bar_t = state_;
+      Eigen::MatrixXd Sigma_bar_t = covariance_;
 
-    // Calculate innovation (measurement - prediction)
-    Eigen::VectorXd innovation = measurement - H_ * state_;
+      // Step 4: K_t = Sigma_bar_t * C_t^T * (C_t * Sigma_bar_t * C_t^T + Q_t)^-1
+      Eigen::MatrixXd K_t = Sigma_bar_t * C_.transpose() * (C_ * Sigma_bar_t * C_.transpose() + R_).inverse();
 
-    // Normalize angle difference (still needed for numerical stability)
-    while (innovation(2) > M_PI) innovation(2) -= 2 * M_PI;
-    while (innovation(2) < -M_PI) innovation(2) += 2 * M_PI;
+      // Calculate C_t * mu_bar_t for step 5
+      Eigen::VectorXd C_mu_bar = C_ * mu_bar_t;
 
-    // Calculate Kalman gainhttps://github.com/DavidSeyserGit/turtlebot_localization
-    // Update covariance (Joseph form for numerical stability)
-    Eigen::MatrixXd I = Eigen::MatrixXd::Identity(STATE_SIZE, STATE_SIZE);
-    covariance_ = (I - K * H_) * covariance_ * (I - K * H_).transpose() + K * R_ * K.transpose();
+      // Normalize angle in predicted measurement
+      while (C_mu_bar(2) > M_PI) C_mu_bar(2) -= 2 * M_PI;
+      while (C_mu_bar(2) < -M_PI) C_mu_bar(2) += 2 * M_PI;
 
-    normalizeYaw();
-    
-    RCLCPP_DEBUG(this->get_logger(), 
-                 "Updated with measurements: vx=%.3f, vy=%.3f, omega=%.3f, yaw=%.3f",
-                 measurement(3), measurement(4), measurement(5), yaw);
+      // Calculate innovation z_t - C_t * mu_bar_t
+      Eigen::VectorXd innovation = z_t - C_mu_bar;
+
+      // Normalize angle difference in innovation
+      while (innovation(2) > M_PI) innovation(2) -= 2 * M_PI;
+      while (innovation(2) < -M_PI) innovation(2) += 2 * M_PI;
+
+      // Step 5: mu_t = mu_bar_t + K_t * (z_t - C_t * mu_bar_t)
+      Eigen::VectorXd mu_t = mu_bar_t + K_t * innovation;
+
+      // Step 6: Sigma_t = (I - K_t * C_t) * Sigma_bar_t
+      Eigen::MatrixXd I = Eigen::MatrixXd::Identity(STATE_SIZE, STATE_SIZE);
+      Eigen::MatrixXd Sigma_t = (I - K_t * C_) * Sigma_bar_t;
+
+      // Update state and covariance
+      state_ = mu_t;
+      covariance_ = Sigma_t;
+
+      normalizeYaw();
+
+      RCLCPP_DEBUG(this->get_logger(), 
+                  "Updated with measurements: vx=%.3f, vy=%.3f, omega=%.3f, yaw=%.3f",
+                  z_t(3), z_t(4), z_t(5), yaw);
   }
 
   void normalizeYaw()

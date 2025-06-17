@@ -42,22 +42,8 @@ def generate_launch_description():
         executable='kalman_filter',
         name='kalman_filter',
         output='screen',
-        parameters=[{
-            'use_sim_time': use_sim_time, # Use the LaunchConfiguration here
-        }]
     )
 
-    # Add RViz
-    rviz_config_file = os.path.join(pkg_dir, 'rviz', 'localization.rviz')
-    rviz_node = Node(
-        package='rviz2',
-        executable='rviz2',
-        name='rviz2',
-        arguments=['-d', rviz_config_file],
-        parameters=[{
-            'use_sim_time': use_sim_time, # Use the LaunchConfiguration here
-        }]
-    )
 
     # Add teleop node for easy control
     teleop_node = Node(
@@ -68,11 +54,19 @@ def generate_launch_description():
         output='screen'
     )
 
+    # Add dynamic reconfigure GUI
+    rqt_reconfigure_node = Node(
+        package='rqt_reconfigure',
+        executable='rqt_reconfigure',
+        name='rqt_reconfigure',
+        output='screen'
+    )
+
     return LaunchDescription([
         use_sim_time_arg, # Declare it first
         set_turtlebot_model,
         turtlebot3_world,
         kalman_filter_node,
-        rviz_node,
         teleop_node,
+        rqt_reconfigure_node,
     ])
