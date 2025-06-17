@@ -1,4 +1,5 @@
 #include <cmath> // For M_PI
+#include <random> // For noise generation
 
 // ROS 2 Headers
 #include "rclcpp/rclcpp.hpp"
@@ -10,6 +11,7 @@
 
 // ROS 2 Message Types
 #include "sensor_msgs/msg/imu.hpp"
+#include "sensor_msgs/msg/joint_state.hpp"
 #include "nav_msgs/msg/odometry.hpp"
 #include "geometry_msgs/msg/twist.hpp"
 
@@ -24,17 +26,17 @@ public:
     // Initialize Kalman filter parameters
     initializeKalmanFilter();
 
-    // Set up synchronized subscribers for IMU and Odometry
+    // Set up synchronized subscribers for IMU and Joint States
     imu_sub_.subscribe(this, "/imu");
-    odom_sub_.subscribe(this, "/odom");
+    joint_sub_.subscribe(this, "/joint_states");
 
     typedef message_filters::sync_policies::ApproximateTime<
-        sensor_msgs::msg::Imu, nav_msgs::msg::Odometry> MyApproxSyncPolicy;
+        sensor_msgs::msg::Imu, sensor_msgs::msg::JointState> MyApproxSyncPolicy;
 
     synchronizer_ = std::make_shared<message_filters::Synchronizer<MyApproxSyncPolicy>>(
         MyApproxSyncPolicy(100), // The policy object itself with queue size 100
         imu_sub_,
-        odom_sub_
+        joint_sub_
     );
 
     synchronizer_->registerCallback(std::bind(
@@ -51,7 +53,7 @@ public:
 
     last_time_ = this->now();
     
-    RCLCPP_INFO(this->get_logger(), "Kalman filter initialized with velocity-only odometry. Waiting for messages...");
+    RCLCPP_INFO(this->get_logger(), "Kalman filter initialized with wheel encoders and IMU. Waiting for messages...");
   }
 
 private:
@@ -66,37 +68,43 @@ private:
   Eigen::VectorXd u_;            // Control input vector
 
   const int STATE_SIZE = 6;      // Size of state vector
-  const int MEASUREMENT_SIZE = 3; // Only measuring [vx, vy, omega] now!
+  const int MEASUREMENT_SIZE = 3; // Only measuring [vx, vy, omega] - no ground truth pose!
   const int CONTROL_SIZE = 2;    // Size of control input vector [v, omega]
 
   bool initialized_state_ = false;
   rclcpp::Time last_time_;
   std::mutex state_mutex_;
 
+  // Robot parameters
+  const double WHEELBASE = 0.287;  // TurtleBot3 wheelbase in meters
+  const double WHEEL_RADIUS = 0.033;  // TurtleBot3 wheel radius in meters
+
   // Synchronized subscribers
   message_filters::Subscriber<sensor_msgs::msg::Imu> imu_sub_;
-  message_filters::Subscriber<nav_msgs::msg::Odometry> odom_sub_;
+  message_filters::Subscriber<sensor_msgs::msg::JointState> joint_sub_;
 
   std::shared_ptr<message_filters::Synchronizer<
       message_filters::sync_policies::ApproximateTime<
-      sensor_msgs::msg::Imu, nav_msgs::msg::Odometry>>> synchronizer_;
+      sensor_msgs::msg::Imu, sensor_msgs::msg::JointState>>> synchronizer_;
 
   // Regular subscribers
   rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr cmd_vel_sub_;
   rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr filtered_state_pub_;
+
+
 
   void initializeKalmanFilter() {
     // Initialize state vector
     state_ = Eigen::VectorXd::Zero(STATE_SIZE);
     
     // Initialize covariance matrix
-    covariance_ = Eigen::MatrixXd::Identity(STATE_SIZE, STATE_SIZE) * 0.1;
+    covariance_ = Eigen::MatrixXd::Identity(STATE_SIZE, STATE_SIZE);
     
     // Initialize process noise covariance
     Q_ = Eigen::MatrixXd::Identity(STATE_SIZE, STATE_SIZE) * 0.1;
     
     // Initialize measurement noise covariance
-    R_ = Eigen::MatrixXd::Identity(6, 6) * 0.1;  // 6x6 for [x, y, theta, vx, vy, omega]
+    R_ = Eigen::MatrixXd::Identity(MEASUREMENT_SIZE, MEASUREMENT_SIZE) * 0.5;  // 3x3 for [vx, vy, omega]
     
     // Initialize state transition matrix
     A_ = Eigen::MatrixXd::Identity(STATE_SIZE, STATE_SIZE);
@@ -104,8 +112,11 @@ private:
     // Initialize control input matrix
     B_ = Eigen::MatrixXd::Zero(STATE_SIZE, CONTROL_SIZE);
     
-    // Initialize observation matrix
-    C_ = Eigen::MatrixXd::Identity(6, STATE_SIZE);  // 6x6 for measuring all states
+    // Initialize observation matrix - only measure velocities, not positions
+    C_ = Eigen::MatrixXd::Zero(MEASUREMENT_SIZE, STATE_SIZE);  // 3x6 for measuring [vx, vy, omega]
+    C_(0, 1) = 1.0;  // Measure vx (state index 1)
+    C_(1, 3) = 1.0;  // Measure vy (state index 3) 
+    C_(2, 5) = 1.0;  // Measure omega (state index 5)
     
     // Initialize control input vector
     u_ = Eigen::VectorXd::Zero(CONTROL_SIZE);
@@ -120,50 +131,73 @@ private:
     RCLCPP_DEBUG(this->get_logger(), "Received cmd_vel: v=%.3f, omega=%.3f", u_(0), u_(1));
   }
 
+  // Helper function to compute robot velocities from wheel encoder data
+  std::pair<double, double> computeVelocitiesFromWheels(const sensor_msgs::msg::JointState::ConstSharedPtr joint_msg) 
+  {
+    // Find wheel velocities in joint state message
+    double v_left = 0.0, v_right = 0.0;
+    
+    for (size_t i = 0; i < joint_msg->name.size(); ++i) {
+      if (joint_msg->name[i] == "wheel_left_joint") {
+        v_left = joint_msg->velocity[i] * WHEEL_RADIUS;  // Convert rad/s to m/s
+      } else if (joint_msg->name[i] == "wheel_right_joint") {
+        v_right = joint_msg->velocity[i] * WHEEL_RADIUS;  // Convert rad/s to m/s
+      }
+    }
+    
+    // Differential drive kinematics
+    double v_linear = (v_left + v_right) / 2.0;          // Forward velocity
+    double v_angular = (v_right - v_left) / WHEELBASE;   // Angular velocity from wheels
+    
+    return std::make_pair(v_linear, v_angular);
+  }
+
   void synchronizedCallback(
       const sensor_msgs::msg::Imu::ConstSharedPtr imu_msg,
-      const nav_msgs::msg::Odometry::ConstSharedPtr odom_msg)
+      const sensor_msgs::msg::JointState::ConstSharedPtr joint_msg)
   {
     std::lock_guard<std::mutex> lock(state_mutex_);
     
     if (!initialized_state_) {
-      initializeState(imu_msg, odom_msg);
+      initializeState(imu_msg, joint_msg);
       return;
     }
 
     predict();
-    update(imu_msg, odom_msg);
+    update(imu_msg, joint_msg);
     publishFilteredState();
   }
 
   void initializeState(
     const sensor_msgs::msg::Imu::ConstSharedPtr imu_msg,
-    const nav_msgs::msg::Odometry::ConstSharedPtr odom_msg)
+    const sensor_msgs::msg::JointState::ConstSharedPtr joint_msg)
   {
-    // Extract yaw from quaternion
-    tf2::Quaternion q(
-      odom_msg->pose.pose.orientation.x,
-      odom_msg->pose.pose.orientation.y,
-      odom_msg->pose.pose.orientation.z,
-      odom_msg->pose.pose.orientation.w);
-    double roll, pitch, yaw;
-    tf2::Matrix3x3(q).getRPY(roll, pitch, yaw);
+    // Compute initial velocities from wheel encoders
+    auto wheel_velocities = computeVelocitiesFromWheels(joint_msg);
+    double v_linear = wheel_velocities.first;
+    
+    // Initialize state with zero position and current velocities
+    state_ << 0.0,                              // 0: x position (start at origin)
+             v_linear,                          // 1: vx velocity (from wheels)
+             0.0,                               // 2: y position (start at origin)
+             0.0,                               // 3: vy velocity (assume no lateral motion)
+             0.0,                               // 4: theta (start aligned with x-axis)
+             imu_msg->angular_velocity.z;       // 5: omega (from IMU)
 
-    state_ << odom_msg->pose.pose.position.x,     // 0: x position
-             odom_msg->twist.twist.linear.x,      // 1: vx velocity
-             odom_msg->pose.pose.position.y,      // 2: y position
-             odom_msg->twist.twist.linear.y,      // 3: vy velocity
-             yaw,                                 // 4: theta (yaw)
-             imu_msg->angular_velocity.z;         // 5: omega
-
-    // Reduce initial uncertainty for velocities since we have measurements
-    covariance_ = Eigen::MatrixXd::Identity(STATE_SIZE, STATE_SIZE) * 0.1;
+    // Set higher initial uncertainty for positions since we don't measure them
+    covariance_ = Eigen::MatrixXd::Identity(STATE_SIZE, STATE_SIZE);
+    covariance_(0, 0) = 1.0;   // High uncertainty in x position
+    covariance_(1, 1) = 0.1;   // Lower uncertainty in vx (we measure it)
+    covariance_(2, 2) = 1.0;   // High uncertainty in y position  
+    covariance_(3, 3) = 0.1;   // Lower uncertainty in vy (assume small)
+    covariance_(4, 4) = 0.5;   // Medium uncertainty in theta
+    covariance_(5, 5) = 0.1;   // Lower uncertainty in omega (we measure it)
 
     initialized_state_ = true;
     last_time_ = this->now();
     
     RCLCPP_INFO(this->get_logger(), 
-                "Initialized state: x=%.3f, y=%.3f, theta=%.3f, vx=%.3f, vy=%.3f, omega=%.3f",
+                "Initialized state from wheel encoders: x=%.3f, y=%.3f, theta=%.3f, vx=%.3f, vy=%.3f, omega=%.3f",
                 state_(0), state_(2), state_(4), state_(1), state_(3), state_(5));
   }
 
@@ -201,6 +235,9 @@ private:
     B_(3, 0) = 0.0;  // vy = 0 (assuming small angles)
     B_(5, 1) = 1.0;  // omega = omega_cmd
 
+    // Store state before prediction for debugging
+    Eigen::VectorXd state_before = state_;
+    
     // Predict state
     state_ = A_ * state_ + B_ * u_;
 
@@ -208,54 +245,46 @@ private:
     covariance_ = A_ * covariance_ * A_.transpose() + Q_;
 
     normalizeYaw();
-    
-    RCLCPP_DEBUG(this->get_logger(), 
-                 "Predicted state: x=%.3f, y=%.3f, theta=%.3f, vx=%.3f, vy=%.3f, omega=%.3f (dt=%.4f)",
-                 state_(0), state_(2), state_(4), state_(1), state_(3), state_(5), dt);
   }
 
   void update(
     const sensor_msgs::msg::Imu::ConstSharedPtr imu_msg,
-    const nav_msgs::msg::Odometry::ConstSharedPtr odom_msg)
+    const sensor_msgs::msg::JointState::ConstSharedPtr joint_msg)
   {
-      // Extract yaw from quaternion for measurement
-      tf2::Quaternion q(
-          odom_msg->pose.pose.orientation.x,
-          odom_msg->pose.pose.orientation.y,
-          odom_msg->pose.pose.orientation.z,
-          odom_msg->pose.pose.orientation.w);
-      double roll, pitch, yaw;
-      tf2::Matrix3x3(q).getRPY(roll, pitch, yaw);
+      // Compute velocities from wheel encoder data
+      auto wheel_velocities = computeVelocitiesFromWheels(joint_msg);
+      double vx_wheels = wheel_velocities.first;   // Forward velocity from wheels
+      double vy_wheels = 0.0;                      // Assume no lateral velocity for diff drive robot
 
-      // Create measurement vector z_t
-      Eigen::VectorXd z_t(6);  // [x, y, theta, vx, vy, omega]
-      z_t << odom_msg->pose.pose.position.x,   // x position
-             odom_msg->pose.pose.position.y,   // y position
-             yaw,                              // theta
-             odom_msg->twist.twist.linear.x,   // vx from odometry
-             odom_msg->twist.twist.linear.y,   // vy from odometry
-             imu_msg->angular_velocity.z;      // omega from IMU
+      // Add noise to measurements
+      static std::random_device rd;
+      static std::mt19937 gen(rd());
+      static std::normal_distribution<double> vel_noise(0.0, 0.1); // 0.05 m/s standard deviation
+      static std::normal_distribution<double> omega_noise(0.0, 0.1); // 0.01 rad/s standard deviation
+
+      vx_wheels += vel_noise(gen);
+      vy_wheels += vel_noise(gen);
+      double omega = imu_msg->angular_velocity.z + omega_noise(gen);
+
+      // Create measurement vector z_t - velocities from wheel encoders and IMU
+      Eigen::VectorXd z_t(MEASUREMENT_SIZE);  // [vx, vy, omega]
+      z_t << vx_wheels,                       // vx from wheel encoders
+            vy_wheels,                       // vy (zero for differential drive)
+            omega;
 
       // Store predicted state and covariance (mu_bar_t, Sigma_bar_t)
       Eigen::VectorXd mu_bar_t = state_;
       Eigen::MatrixXd Sigma_bar_t = covariance_;
 
       // Step 4: K_t = Sigma_bar_t * C_t^T * (C_t * Sigma_bar_t * C_t^T + Q_t)^-1
-      Eigen::MatrixXd K_t = Sigma_bar_t * C_.transpose() * (C_ * Sigma_bar_t * C_.transpose() + R_).inverse();
+      Eigen::MatrixXd S = C_ * Sigma_bar_t * C_.transpose() + R_;  // Innovation covariance
+      Eigen::MatrixXd K_t = Sigma_bar_t * C_.transpose() * S.inverse();
 
       // Calculate C_t * mu_bar_t for step 5
       Eigen::VectorXd C_mu_bar = C_ * mu_bar_t;
 
-      // Normalize angle in predicted measurement
-      while (C_mu_bar(2) > M_PI) C_mu_bar(2) -= 2 * M_PI;
-      while (C_mu_bar(2) < -M_PI) C_mu_bar(2) += 2 * M_PI;
-
-      // Calculate innovation z_t - C_t * mu_bar_t
+      // Calculate innovation z_t - C_t * mu_bar_t (no angle normalization needed for velocities)
       Eigen::VectorXd innovation = z_t - C_mu_bar;
-
-      // Normalize angle difference in innovation
-      while (innovation(2) > M_PI) innovation(2) -= 2 * M_PI;
-      while (innovation(2) < -M_PI) innovation(2) += 2 * M_PI;
 
       // Step 5: mu_t = mu_bar_t + K_t * (z_t - C_t * mu_bar_t)
       Eigen::VectorXd mu_t = mu_bar_t + K_t * innovation;
@@ -264,15 +293,36 @@ private:
       Eigen::MatrixXd I = Eigen::MatrixXd::Identity(STATE_SIZE, STATE_SIZE);
       Eigen::MatrixXd Sigma_t = (I - K_t * C_) * Sigma_bar_t;
 
+      // Rate-limited debug output (every 20 updates, ~1Hz at 20Hz)
+      static int debug_counter = 0;
+      if (++debug_counter % 20 == 0) {
+        RCLCPP_INFO(this->get_logger(), 
+                    "=== KALMAN FILTER UPDATE #%d ===", debug_counter);
+        RCLCPP_INFO(this->get_logger(), 
+                    "Measurements:  vx=%6.3f, vy=%6.3f, omega=%6.3f", 
+                    z_t(0), z_t(1), z_t(2));
+        RCLCPP_INFO(this->get_logger(), 
+                    "Innovation:    vx=%6.3f, vy=%6.3f, omega=%6.3f", 
+                    innovation(0), innovation(1), innovation(2));
+        RCLCPP_INFO(this->get_logger(), 
+                    "Kalman Gains:  vx=%6.3f, vy=%6.3f, omega=%6.3f", 
+                    K_t(1,0), K_t(3,1), K_t(5,2));
+        RCLCPP_INFO(this->get_logger(), 
+                    "State: x=%6.3f, vx=%6.3f, y=%6.3f, vy=%6.3f, θ=%6.3f, ω=%6.3f",
+                    mu_t(0), mu_t(1), mu_t(2), mu_t(3), mu_t(4), mu_t(5));
+        RCLCPP_INFO(this->get_logger(), 
+                    "Uncertainties: σ_x=%5.3f, σ_vx=%5.3f, σ_y=%5.3f, σ_vy=%5.3f, σ_θ=%5.3f, σ_ω=%5.3f",
+                    sqrt(Sigma_t(0,0)), sqrt(Sigma_t(1,1)), sqrt(Sigma_t(2,2)), 
+                    sqrt(Sigma_t(3,3)), sqrt(Sigma_t(4,4)), sqrt(Sigma_t(5,5)));
+        RCLCPP_INFO(this->get_logger(), 
+                    "=====================================");
+      }
+
       // Update state and covariance
       state_ = mu_t;
       covariance_ = Sigma_t;
 
       normalizeYaw();
-
-      RCLCPP_DEBUG(this->get_logger(), 
-                  "Updated with measurements: vx=%.3f, vy=%.3f, omega=%.3f, yaw=%.3f",
-                  z_t(3), z_t(4), z_t(5), yaw);
   }
 
   void normalizeYaw()

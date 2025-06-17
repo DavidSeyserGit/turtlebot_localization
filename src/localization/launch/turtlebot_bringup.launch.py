@@ -33,15 +33,23 @@ def generate_launch_description():
         PythonLaunchDescriptionSource(
             os.path.join(turtlebot3_gazebo_dir, 'launch', 'turtlebot3_world.launch.py')
         ),
-        launch_arguments={'use_sim_time': use_sim_time}.items()
     )
 
-    # Add KalmanFilter node
+    # Add KalmanFilter node with debug logging
     kalman_filter_node = Node(
         package='localization',
         executable='kalman_filter',
         name='kalman_filter',
         output='screen',
+        arguments=[
+            '--ros-args', 
+            '--log-level', 'INFO',
+            '--ros-args',
+            '--log-level', 'rcl:=WARN'  # Suppress RCL debug messages
+        ],
+        parameters=[{
+            'use_sim_time': use_sim_time,
+        }]
     )
 
 

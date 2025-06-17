@@ -40,10 +40,20 @@ ament_target_dependencies(ekf_node
 )
 target_link_libraries(ekf_node Eigen3::Eigen)
 
+# Add robot driver executable
+add_executable(robot_driver src/robot_driver.cpp)
+
+ament_target_dependencies(robot_driver
+  rclcpp
+  geometry_msgs
+)
+target_link_libraries(robot_driver)
+
 install(
   TARGETS 
     kalman_filter
     ekf_node
+    robot_driver
   DESTINATION lib/${PROJECT_NAME}
 )
 
