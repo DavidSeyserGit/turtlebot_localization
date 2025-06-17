@@ -187,18 +187,19 @@ private:
     double omega = state_(5);
 
     // Update state transition matrix with current dt
+    // Using linear approximation: cos(theta) ≈ 1, sin(theta) ≈ 0 for small angles
     A_ = Eigen::MatrixXd::Identity(STATE_SIZE, STATE_SIZE);
-    A_(0, 1) = dt * cos(theta);  // x += vx * cos(theta) * dt
-    A_(0, 3) = -dt * sin(theta); // x += vy * -sin(theta) * dt
-    A_(2, 1) = dt * sin(theta);  // y += vx * sin(theta) * dt
-    A_(2, 3) = dt * cos(theta);  // y += vy * cos(theta) * dt
-    A_(4, 5) = dt;               // theta += omega * dt
+    A_(0, 1) = dt;  // x += vx * dt
+    A_(2, 3) = dt;  // y += vy * dt
+    A_(4, 5) = dt;  // theta += omega * dt
+  
 
-    // Update control input matrix with current pose
+    // Update control input matrix
+    // Using linear approximation for small angles
     B_ = Eigen::MatrixXd::Zero(STATE_SIZE, CONTROL_SIZE);
-    B_(1, 0) = cos(theta);  // vx = v * cos(theta)
-    B_(3, 0) = sin(theta);  // vy = v * sin(theta)
-    B_(5, 1) = 1.0;        // omega = omega_cmd
+    B_(1, 0) = 1.0;  // vx = v (assuming small angles)
+    B_(3, 0) = 0.0;  // vy = 0 (assuming small angles)
+    B_(5, 1) = 1.0;  // omega = omega_cmd
 
     // Predict state
     state_ = A_ * state_ + B_ * u_;
@@ -241,17 +242,11 @@ private:
     // Calculate innovation (measurement - prediction)
     Eigen::VectorXd innovation = measurement - H_ * state_;
 
-    // Normalize angle difference
+    // Normalize angle difference (still needed for numerical stability)
     while (innovation(2) > M_PI) innovation(2) -= 2 * M_PI;
     while (innovation(2) < -M_PI) innovation(2) += 2 * M_PI;
 
-    // Calculate Kalman gain
-    Eigen::MatrixXd S = H_ * covariance_ * H_.transpose() + R_;
-    Eigen::MatrixXd K = covariance_ * H_.transpose() * S.inverse();
-
-    // Update state
-    state_ = state_ + K * innovation;
-
+    // Calculate Kalman gainhttps://github.com/DavidSeyserGit/turtlebot_localization
     // Update covariance (Joseph form for numerical stability)
     Eigen::MatrixXd I = Eigen::MatrixXd::Identity(STATE_SIZE, STATE_SIZE);
     covariance_ = (I - K * H_) * covariance_ * (I - K * H_).transpose() + K * R_ * K.transpose();
@@ -269,6 +264,8 @@ private:
     while (state_(4) > M_PI) state_(4) -= 2 * M_PI;
     while (state_(4) < -M_PI) state_(4) += 2 * M_PI;
   }
+
+  // this is so that i can rosbag record the filtered state
 
   void publishFilteredState()
   {
