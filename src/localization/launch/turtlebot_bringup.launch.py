@@ -52,13 +52,10 @@ def generate_launch_description():
         }]
     )
 
-
-    # Add teleop node for easy control
-    teleop_node = Node(
-        package='turtlebot3_teleop',
-        executable='teleop_keyboard',
-        name='teleop_keyboard',
-        prefix = 'xterm -e',
+    ekf_node = Node(
+        package='localization',
+        executable='ekf_node',
+        name='ekf_node',
         output='screen'
     )
 
@@ -75,6 +72,6 @@ def generate_launch_description():
         set_turtlebot_model,
         turtlebot3_world,
         kalman_filter_node,
-        teleop_node,
+        ekf_node,
         rqt_reconfigure_node,
     ])

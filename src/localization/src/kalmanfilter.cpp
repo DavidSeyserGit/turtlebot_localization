@@ -104,7 +104,7 @@ private:
     Q_ = Eigen::MatrixXd::Identity(STATE_SIZE, STATE_SIZE) * 0.1;
     
     // Initialize measurement noise covariance
-    R_ = Eigen::MatrixXd::Identity(MEASUREMENT_SIZE, MEASUREMENT_SIZE) * 0.5;  // 3x3 for [vx, vy, omega]
+    R_ = Eigen::MatrixXd::Identity(MEASUREMENT_SIZE, MEASUREMENT_SIZE);  // 3x3 for [vx, vy, omega]
     
     // Initialize state transition matrix
     A_ = Eigen::MatrixXd::Identity(STATE_SIZE, STATE_SIZE);
@@ -256,21 +256,11 @@ private:
       double vx_wheels = wheel_velocities.first;   // Forward velocity from wheels
       double vy_wheels = 0.0;                      // Assume no lateral velocity for diff drive robot
 
-      // Add noise to measurements
-      static std::random_device rd;
-      static std::mt19937 gen(rd());
-      static std::normal_distribution<double> vel_noise(0.0, 0.1); // 0.05 m/s standard deviation
-      static std::normal_distribution<double> omega_noise(0.0, 0.1); // 0.01 rad/s standard deviation
-
-      vx_wheels += vel_noise(gen);
-      vy_wheels += vel_noise(gen);
-      double omega = imu_msg->angular_velocity.z + omega_noise(gen);
-
       // Create measurement vector z_t - velocities from wheel encoders and IMU
       Eigen::VectorXd z_t(MEASUREMENT_SIZE);  // [vx, vy, omega]
       z_t << vx_wheels,                       // vx from wheel encoders
             vy_wheels,                       // vy (zero for differential drive)
-            omega;
+            imu_msg->angular_velocity.z;
 
       // Store predicted state and covariance (mu_bar_t, Sigma_bar_t)
       Eigen::VectorXd mu_bar_t = state_;

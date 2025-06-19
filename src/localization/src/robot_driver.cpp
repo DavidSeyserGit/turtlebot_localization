@@ -29,6 +29,12 @@ public:
         RCLCPP_INFO(this->get_logger(), "Robot driver started! Available patterns:");
         RCLCPP_INFO(this->get_logger(), "  - circle: Drives in circles");
         RCLCPP_INFO(this->get_logger(), "  - square: Drives in a square pattern");
+        RCLCPP_INFO(this->get_logger(), "  - triangle: Drives in triangular pattern");
+        RCLCPP_INFO(this->get_logger(), "  - hexagon: Drives in hexagonal pattern");
+        RCLCPP_INFO(this->get_logger(), "  - spiral: Spiral outward pattern");
+        RCLCPP_INFO(this->get_logger(), "  - sine_wave: Sinusoidal path");
+        RCLCPP_INFO(this->get_logger(), "  - zigzag: Zigzag pattern");
+        RCLCPP_INFO(this->get_logger(), "  - forward_circle_forward: Forward, circle, forward (10s total)");
         RCLCPP_INFO(this->get_logger(), "  - figure8: Drives in figure-8 pattern");
         RCLCPP_INFO(this->get_logger(), "  - random: Random walk");
         RCLCPP_INFO(this->get_logger(), "  - straight: Forward and backward");
@@ -108,6 +114,32 @@ private:
                 twist_stamped.twist.linear.x = -linear_speed;
             }
             twist_stamped.twist.angular.z = 0.0;
+        }
+        else if (pattern == "zigzag") {
+            // Zigzag pattern: sharp left/right turns
+            double cycle_time = fmod(elapsed, 4.0);
+            twist_stamped.twist.linear.x = linear_speed;
+            if (cycle_time < 2.0) {
+                twist_stamped.twist.angular.z = angular_speed * 1.5;  // Turn left
+            } else {
+                twist_stamped.twist.angular.z = -angular_speed * 1.5; // Turn right
+            }
+        }
+        else if (pattern == "forward_circle_forward") {
+            // Forward for 3.3s, circle for 3.3s, forward for 3.3s (10s total)
+            if (elapsed < 3.33) {
+                // Phase 1: Drive forward
+                twist_stamped.twist.linear.x = linear_speed;
+                twist_stamped.twist.angular.z = 0.0;
+            } else if (elapsed < 6.66) {
+                // Phase 2: Drive in circle
+                twist_stamped.twist.linear.x = linear_speed;
+                twist_stamped.twist.angular.z = angular_speed;
+            } else {
+                // Phase 3: Drive forward again
+                twist_stamped.twist.linear.x = linear_speed;
+                twist_stamped.twist.angular.z = 0.0;
+            }
         }
         else {
             RCLCPP_WARN_ONCE(this->get_logger(), "Unknown pattern: %s, using circle", pattern.c_str());
