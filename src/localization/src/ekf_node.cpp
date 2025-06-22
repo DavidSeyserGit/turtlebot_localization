@@ -26,25 +26,25 @@ public:
   EKF_IMU() : Node("ekf_imu") {
 
     // Load noise parameters with good defaults for IMU+Joint EKF
-    process_noise_x_ = this->declare_parameter("process_noise_x", 0.001);  // Lower position noise
-    process_noise_vx_ = this->declare_parameter("process_noise_vx", 0.01);  // Lower velocity noise
-    process_noise_y_ = this->declare_parameter("process_noise_y", 0.001);  // Lower position noise
-    process_noise_vy_ = this->declare_parameter("process_noise_vy", 0.01);  // Lower velocity noise
-    process_noise_theta_ = this->declare_parameter("process_noise_theta", 0.001);
-    process_noise_omega_ = this->declare_parameter("process_noise_omega", 0.01);
+    process_noise_x_ = this->declare_parameter("process_noise_x", 0.1);
+    process_noise_vx_ = this->declare_parameter("process_noise_vx", 0.1);
+    process_noise_y_ = this->declare_parameter("process_noise_y", 0.1);
+    process_noise_vy_ = this->declare_parameter("process_noise_vy", 0.1);
+    process_noise_theta_ = this->declare_parameter("process_noise_theta", 0.1);
+    process_noise_omega_ = this->declare_parameter("process_noise_omega", 0.1);
     
-    measurement_noise_vx_ = this->declare_parameter("measurement_noise_vx", 0.05);  // Lower measurement noise
-    measurement_noise_vy_ = this->declare_parameter("measurement_noise_vy", 0.05);  // Lower measurement noise
-    measurement_noise_omega_ = this->declare_parameter("measurement_noise_omega", 0.01);  // Lower measurement noise
+    measurement_noise_vx_ = this->declare_parameter("measurement_noise_vx", 0.1);
+    measurement_noise_vy_ = this->declare_parameter("measurement_noise_vy", 0.1);
+    measurement_noise_omega_ = this->declare_parameter("measurement_noise_omega", 0.001);
     
-    initial_covariance_pos_ = this->declare_parameter("initial_covariance_pos", 0.1);
-    initial_covariance_vel_ = this->declare_parameter("initial_covariance_vel", 0.1);
-    initial_covariance_theta_ = this->declare_parameter("initial_covariance_theta", 0.1);
-    initial_covariance_omega_ = this->declare_parameter("initial_covariance_omega", 0.1);
+    initial_covariance_pos_ = this->declare_parameter("initial_covariance_pos", 0.001);
+    initial_covariance_vel_ = this->declare_parameter("initial_covariance_vel", 0.001);
+    initial_covariance_theta_ = this->declare_parameter("initial_covariance_theta", 0.001);
+    initial_covariance_omega_ = this->declare_parameter("initial_covariance_omega", 0.001);
 
     // Robot parameters for TurtleBot3
-    wheelbase_ = this->declare_parameter("wheelbase", 0.287);  // TurtleBot3 wheelbase in meters
-    wheel_radius_ = this->declare_parameter("wheel_radius", 0.033);  // TurtleBot3 wheel radius in meters
+    wheelbase_ = this->declare_parameter("wheelbase", 0.287);
+    wheel_radius_ = this->declare_parameter("wheel_radius", 0.033);
 
     // Log loaded parameters
     RCLCPP_INFO(this->get_logger(), "EKF-IMU+Joint initialized with parameters:");
@@ -66,7 +66,7 @@ public:
         sensor_msgs::msg::Imu, sensor_msgs::msg::JointState> MyApproxSyncPolicy;
 
     synchronizer_ = std::make_shared<message_filters::Synchronizer<MyApproxSyncPolicy>>(
-        MyApproxSyncPolicy(100), // The policy object itself with queue size 100
+        MyApproxSyncPolicy(100),
         imu_sub_,
         joint_sub_
     );
@@ -81,7 +81,7 @@ public:
         std::lock_guard<std::mutex> lock(state_mutex_);
         u_(0) = msg->twist.linear.x;
         u_(1) = msg->twist.angular.z;
-        RCLCPP_INFO(this->get_logger(), "Received cmd_vel: v=%.3f, omega=%.3f", u_(0), u_(1));
+        RCLCPP_DEBUG(this->get_logger(), "Received cmd_vel: v=%.3f, omega=%.3f", u_(0), u_(1));
       });
 
     // Create publisher for filtered state
@@ -150,12 +150,12 @@ private:
     
     // Initialize covariance matrix
     covariance_ = Eigen::MatrixXd::Identity(STATE_SIZE, STATE_SIZE);
-    covariance_(0, 0) = 0.1;   // Lower uncertainty in x position
-    covariance_(1, 1) = 0.01;  // Lower uncertainty in vx (we measure it)
-    covariance_(2, 2) = 0.1;   // Lower uncertainty in y position  
-    covariance_(3, 3) = 0.01;  // Lower uncertainty in vy (assume small)
-    covariance_(4, 4) = 0.1;   // Lower uncertainty in theta
-    covariance_(5, 5) = 0.01;  // Lower uncertainty in omega (we measure it)
+    covariance_(0, 0) = 0.1;   // x position
+    covariance_(1, 1) = 0.01;  // vx (we measure it)
+    covariance_(2, 2) = 0.1;   // y position  
+    covariance_(3, 3) = 0.01;  // vy (assume small)
+    covariance_(4, 4) = 0.1;   // theta
+    covariance_(5, 5) = 0.01;  // omega (we measure it)
     
     // Initialize process noise covariance
     updateNoiseParameters();
@@ -183,33 +183,29 @@ private:
     RCLCPP_DEBUG(this->get_logger(), "Updated EKF noise parameters");
   }
 
-  void cmdVelCallback(const geometry_msgs::msg::Twist::SharedPtr msg) {
-    std::lock_guard<std::mutex> lock(state_mutex_);
-    u_(0) = msg->linear.x;   // v_cmd
-    u_(1) = msg->angular.z;  // omega_cmd
-    
-    RCLCPP_DEBUG(this->get_logger(), "Received cmd_vel: v=%.3f, omega=%.3f", u_(0), u_(1));
-  }
-
   // Helper function to compute robot velocities from wheel encoder data
   std::pair<double, double> computeVelocitiesFromWheels(const sensor_msgs::msg::JointState::ConstSharedPtr joint_msg) {
-    // Find wheel velocities in joint state message
     double v_left = 0.0, v_right = 0.0;
     
     for (size_t i = 0; i < joint_msg->name.size(); ++i) {
-      if (joint_msg->name[i] == "wheel_left_joint") {
-        v_left = joint_msg->velocity[i] * wheel_radius_;  // Convert rad/s to m/s
-      } else if (joint_msg->name[i] == "wheel_right_joint") {
-        v_right = joint_msg->velocity[i] * wheel_radius_;  // Convert rad/s to m/s
-      }
+        if (joint_msg->name[i] == "wheel_left_joint") {
+            v_left = joint_msg->velocity[i] * wheel_radius_;
+        } else if (joint_msg->name[i] == "wheel_right_joint") {
+            v_right = joint_msg->velocity[i] * wheel_radius_;
+        }
     }
     
     // Differential drive kinematics
-    double v_linear = (v_left + v_right) / 2.0;          // Forward velocity
-    double v_angular = (v_right - v_left) / wheelbase_;  // Angular velocity from wheels
+    double v_linear = (v_left + v_right) / 2.0;
+    double v_angular = (v_right - v_left) / wheelbase_;
     
-    return std::make_pair(v_linear, v_angular);
-  }
+    // Convert to global frame velocities
+    double theta = state_(4);  // Current heading
+    double vx_global = v_linear * std::cos(theta);
+    double vy_global = v_linear * std::sin(theta);
+    
+    return std::make_pair(vx_global, vy_global);
+  } 
 
   void synchronizedCallback(
       const sensor_msgs::msg::Imu::ConstSharedPtr imu_msg,
@@ -235,24 +231,23 @@ private:
     
     // Compute initial velocities from wheel encoders
     auto wheel_velocities = computeVelocitiesFromWheels(joint_msg);
-    double v_linear = wheel_velocities.first;
     
     // Initialize state with zero position and current velocities
     state_ << 0.0,                              // 0: x position (start at origin)
-             v_linear,                          // 1: vx velocity (from wheels)
+             wheel_velocities.first,            // 1: vx velocity (from wheels)
              0.0,                               // 2: y position (start at origin)
-             0.0,                               // 3: vy velocity (assume no lateral motion)
+             wheel_velocities.second,           // 3: vy velocity (from wheels)
              0.0,                               // 4: theta (start aligned with x-axis)
              imu_msg->angular_velocity.z;       // 5: omega (from IMU)
 
-    // Set higher initial uncertainty for positions since we don't measure them directly
+    // Set initial uncertainty
     covariance_ = Eigen::MatrixXd::Identity(STATE_SIZE, STATE_SIZE);
-    covariance_(0, 0) = 0.1;   // Lower uncertainty in x position
-    covariance_(1, 1) = 0.01;  // Lower uncertainty in vx (we measure it)
-    covariance_(2, 2) = 0.1;   // Lower uncertainty in y position  
-    covariance_(3, 3) = 0.01;  // Lower uncertainty in vy (assume small)
-    covariance_(4, 4) = 0.1;   // Lower uncertainty in theta
-    covariance_(5, 5) = 0.01;  // Lower uncertainty in omega (we measure it)
+    covariance_(0, 0) = 0.01;   // x position
+    covariance_(1, 1) = 0.01;   // vx (we measure it)
+    covariance_(2, 2) = 0.01;   // y position  
+    covariance_(3, 3) = 0.01;   // vy (assume small)
+    covariance_(4, 4) = 0.01;   // theta
+    covariance_(5, 5) = 0.01;   // omega (we measure it)
     
     initialized_state_ = true;
     last_time_ = current_sensor_time_;
@@ -261,81 +256,46 @@ private:
                 state_(0), state_(2), state_(4), state_(1), state_(3), state_(5));
   }
 
-  void predict(const sensor_msgs::msg::Imu::ConstSharedPtr /*imu_msg*/)
-  {
-    // dt from last update
+  void predict(const sensor_msgs::msg::Imu::ConstSharedPtr /*imu_msg*/) {
     double dt = (current_sensor_time_ - last_time_).seconds();
     last_time_ = current_sensor_time_;
     if (dt <= 0.0 || dt > 1.0) {
-      RCLCPP_WARN(this->get_logger(), "Invalid dt=%.3f, skipping predict", dt);
-      return;
+        RCLCPP_WARN(this->get_logger(), "Invalid dt=%.3f, skipping predict", dt);
+        return;
     }
 
-    // unpack current state
+    // Current state
     double x     = state_(0);
-    double vx    = state_(1);  // we will re‐compute vx
+    double vx    = state_(1);
     double y     = state_(2);
-    double vy    = state_(3);  // we will re‐compute vy
+    double vy    = state_(3);
     double theta = state_(4);
-    double omega = state_(5);  // we will re‐compute omega
+    double omega = state_(5);
 
-    // shorthand
-    double v_cmd   = u_(0);
-    double w_cmd   = u_(1);
-    double c = std::cos(theta);
-    double s = std::sin(theta);
-
-    //------------------------------------------------------------------------------  
-    // 1) Non‐linear state prediction
-    //    x_{k+1}     = x_k + v_cmd * cos(θ_k) * dt
-    //    y_{k+1}     = y_k + v_cmd * sin(θ_k) * dt
-    //    vx_{k+1}    = v_cmd * cos(θ_k)
-    //    vy_{k+1}    = v_cmd * sin(θ_k)
-    //    θ_{k+1}     = θ_k + w_cmd * dt
-    //    ω_{k+1}     = w_cmd
-    //------------------------------------------------------------------------------
-
+    // Simple constant velocity prediction
     Eigen::VectorXd x_pred = Eigen::VectorXd::Zero(STATE_SIZE);
-    x_pred(0) = x + v_cmd * c * dt;   // x
-    x_pred(1) = v_cmd * c;            // vx
-    x_pred(2) = y + v_cmd * s * dt;   // y
-    x_pred(3) = v_cmd * s;            // vy
-    x_pred(4) = theta + w_cmd * dt;   // θ
-    x_pred(5) = w_cmd;                // ω
+    x_pred(0) = x + vx * dt;              // x = x + vx*dt
+    x_pred(1) = vx;                       // vx stays same (updated by measurement)
+    x_pred(2) = y + vy * dt;              // y = y + vy*dt  
+    x_pred(3) = vy;                       // vy stays same (updated by measurement)
+    x_pred(4) = theta + omega * dt;       // theta = theta + omega*dt
+    x_pred(5) = omega;                    // omega stays same (updated by measurement)
 
-    //------------------------------------------------------------------------------  
-    // 2) Compute Jacobian F = ∂f/∂x at (x_k, u_k)
-    //    Only dependence on θ in the prediction.
-    //------------------------------------------------------------------------------
+    // Simple Jacobian for constant velocity model
+    Eigen::MatrixXd G = Eigen::MatrixXd::Identity(STATE_SIZE, STATE_SIZE);
+    G(0,1) = dt;  // ∂x/∂vx = dt
+    G(2,3) = dt;  // ∂y/∂vy = dt  
+    G(4,5) = dt;  // ∂θ/∂ω = dt
 
-    Eigen::MatrixXd F = Eigen::MatrixXd::Identity(STATE_SIZE, STATE_SIZE);
+    // Update state and covariance
+    state_ = x_pred;
+    covariance_ = G * covariance_ * G.transpose() + Q_;
 
-    // ∂x/∂θ = −v_cmd * sinθ * dt
-    F(0,4) = -v_cmd * s * dt;
-    // ∂y/∂θ =  v_cmd * cosθ * dt
-    F(2,4) =  v_cmd * c * dt;
-
-    // ∂vx/∂θ = -v_cmd * sinθ
-    F(1,4) = -v_cmd * s;
-    // ∂vy/∂θ =  v_cmd * cosθ
-    F(3,4) =  v_cmd * c;
-
-    // Note: we chose ω_{k+1}=w_cmd so no dependence on old ω; if instead you
-    // keep ω_{k+1}=ω_k you would set F(4,5)=dt and F(5,5)=1.
-
-    //------------------------------------------------------------------------------  
-    // 3) Kalman predict: P = F P Fᵀ + Q
-    //------------------------------------------------------------------------------
-
-    state_      = x_pred;
-    covariance_ = F * covariance_ * F.transpose() + Q_;
-
-    normalizeAngle();  // wrap θ into [−π,π]
+    normalizeAngle();
 
     RCLCPP_DEBUG(this->get_logger(),
                 "EKF PREDICT → x=%.3f y=%.3f θ=%.3f vx=%.3f vy=%.3f ω=%.3f",
-                state_(0), state_(2), state_(4),
-                state_(1), state_(3), state_(5));
+                state_(0), state_(2), state_(4), state_(1), state_(3), state_(5));
   }
 
   void update(const sensor_msgs::msg::Imu::ConstSharedPtr imu_msg,
@@ -343,9 +303,9 @@ private:
     
     // Compute velocities from wheel encoder data
     auto wheel_velocities = computeVelocitiesFromWheels(joint_msg);
-    double vx_wheels = wheel_velocities.first;   // Forward velocity from wheels
-    double vy_wheels = 0.0;                      // Assume no lateral velocity for diff drive robot
-    double omega_imu = imu_msg->angular_velocity.z;  // Angular velocity from IMU
+    double vx_wheels = wheel_velocities.first;   // Global vx from wheels
+    double vy_wheels = wheel_velocities.second;  // Global vy from wheels
+    double omega_imu = imu_msg->angular_velocity.z; // Angular velocity from IMU
 
     // Measurement vector z = [vx_wheels, vy_wheels, omega_imu]
     Eigen::VectorXd z(MEASUREMENT_SIZE);
@@ -417,18 +377,18 @@ private:
 
     // Set covariance (simplified)
     for (int i = 0; i < 6; i++) {
-      for (int j = 0; j < 6; j++) {
-        if (i < 3 && j < 3) {
-          // Position covariance
-          filtered_odom.pose.covariance[i * 6 + j] = (i == j) ? covariance_(i * 2, j * 2) : 0.0;
+        for (int j = 0; j < 6; j++) {
+            if (i < 3 && j < 3) {
+                // Position covariance
+                filtered_odom.pose.covariance[i * 6 + j] = (i == j) ? covariance_(i * 2, j * 2) : 0.0;
+            }
+            if (i >= 3 && j >= 3) {
+                // Velocity covariance
+                int state_i = (i - 3) * 2 + 1;
+                int state_j = (j - 3) * 2 + 1;
+                filtered_odom.twist.covariance[i * 6 + j] = (i == j) ? covariance_(state_i, state_j) : 0.0;
+            }
         }
-        if (i >= 3 && j >= 3) {
-          // Velocity covariance
-          int state_i = (i - 3) * 2 + 1;
-          int state_j = (j - 3) * 2 + 1;
-          filtered_odom.twist.covariance[i * 6 + j] = (i == j) ? covariance_(state_i, state_j) : 0.0;
-        }
-      }
     }
 
     filtered_state_pub_->publish(filtered_odom);
@@ -436,9 +396,9 @@ private:
     // Log periodically
     static int counter = 0;
     if (++counter % 50 == 0) {
-      RCLCPP_INFO(this->get_logger(), 
-                  "EKF State: x=%.3f, y=%.3f, θ=%.3f, vx=%.3f, vy=%.3f, ω=%.3f",
-                  state_(0), state_(2), state_(4), state_(1), state_(3), state_(5));
+        RCLCPP_INFO(this->get_logger(), 
+                    "EKF State: x=%.3f, y=%.3f, θ=%.3f, vx=%.3f, vy=%.3f, ω=%.3f",
+                    state_(0), state_(2), state_(4), state_(1), state_(3), state_(5));
     }
   }
 };
