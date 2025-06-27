@@ -59,12 +59,27 @@ def generate_launch_description():
         output='screen'
     )
 
-    # Add dynamic reconfigure GUI
-    rqt_reconfigure_node = Node(
-        package='rqt_reconfigure',
-        executable='rqt_reconfigure',
-        name='rqt_reconfigure',
-        output='screen'
+    # Add Particle Filter node
+    particle_filter_node = Node(
+        package='localization',
+        executable='particle_filter',
+        name='particle_filter',
+        output='screen',
+        arguments=[
+            '--ros-args', 
+            '--log-level', 'INFO',
+            '--ros-args',
+            '--log-level', 'rcl:=WARN'  # Suppress RCL debug messages
+        ],
+        parameters=[{
+            'use_sim_time': use_sim_time,
+            'num_particles': 1000,
+            'wheel_radius': 0.033,
+            'measurement_noise': 0.5,
+            'process_noise_pos': 0.01,
+            'process_noise_vel': 0.1,
+            'process_noise_angle': 0.05,
+        }]
     )
 
     return LaunchDescription([
@@ -73,5 +88,5 @@ def generate_launch_description():
         turtlebot3_world,
         kalman_filter_node,
         ekf_node,
-        rqt_reconfigure_node,
+        particle_filter_node,
     ])

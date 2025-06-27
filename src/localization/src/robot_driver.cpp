@@ -75,12 +75,12 @@ private:
         else if (pattern == "square") {
             // Drive in square pattern: forward 3s, turn 1s, repeat
             double cycle_time = fmod(elapsed, 4.0);
-            if (cycle_time < 3.0) {
+            if (cycle_time < 1.0) {
                 twist_stamped.twist.linear.x = linear_speed;
                 twist_stamped.twist.angular.z = 0.0;
             } else {
                 twist_stamped.twist.linear.x = 0.0;
-                twist_stamped.twist.angular.z = angular_speed * 2.0;  // Faster turns
+                twist_stamped.twist.angular.z = angular_speed * 1.0;  // Faster turns
             }
         }
         else if (pattern == "figure8") {
@@ -119,10 +119,10 @@ private:
             // Zigzag pattern: sharp left/right turns
             double cycle_time = fmod(elapsed, 4.0);
             twist_stamped.twist.linear.x = linear_speed;
-            if (cycle_time < 2.0) {
-                twist_stamped.twist.angular.z = angular_speed * 1.5;  // Turn left
+            if (cycle_time < 1.0) {
+                twist_stamped.twist.angular.z = angular_speed * 3;  // Turn left
             } else {
-                twist_stamped.twist.angular.z = -angular_speed * 1.5; // Turn right
+                twist_stamped.twist.angular.z = -angular_speed * 3; // Turn right
             }
         }
         else if (pattern == "forward_circle_forward") {

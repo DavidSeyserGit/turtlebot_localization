@@ -40,6 +40,20 @@ ament_target_dependencies(ekf_node
 )
 target_link_libraries(ekf_node Eigen3::Eigen)
 
+# Add Particle Filter executable
+add_executable(particle_filter src/particle_filter.cpp)
+
+ament_target_dependencies(particle_filter
+  rclcpp
+  geometry_msgs
+  sensor_msgs
+  nav_msgs
+  message_filters
+  tf2
+  tf2_geometry_msgs
+)
+target_link_libraries(particle_filter Eigen3::Eigen)
+
 # Add robot driver executable
 add_executable(robot_driver src/robot_driver.cpp)
 
@@ -53,6 +67,7 @@ install(
   TARGETS 
     kalman_filter
     ekf_node
+    particle_filter
     robot_driver
   DESTINATION lib/${PROJECT_NAME}
 )
