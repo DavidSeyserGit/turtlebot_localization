@@ -177,12 +177,13 @@ private:
     double v_linear = wheel_velocities.first;
     
     // Initialize state with zero position and current velocities
-    state_ << 0.0,                              // 0: x position (start at origin)
-             v_linear,                          // 1: vx velocity (from wheels)
-             0.0,                               // 2: y position (start at origin)
-             0.0,                               // 3: vy velocity (assume no lateral motion)
-             0.0,                               // 4: theta (start aligned with x-axis)
-             imu_msg->angular_velocity.z;       // 5: omega (from IMU)
+    // should be changed to actually use the real initial position using odometry
+    state_ << 0.0,                              
+             v_linear,                          
+             0.0,                              
+             0.0,                             
+             0.0,                        
+             imu_msg->angular_velocity.z;     
 
     // Set higher initial uncertainty for positions since we don't measure them
     covariance_ = Eigen::MatrixXd::Identity(STATE_SIZE, STATE_SIZE);
@@ -195,16 +196,12 @@ private:
 
     initialized_state_ = true;
     last_time_ = this->now();
-    
-    RCLCPP_INFO(this->get_logger(), 
-                "Initialized state from wheel encoders: x=%.3f, y=%.3f, theta=%.3f, vx=%.3f, vy=%.3f, omega=%.3f",
-                state_(0), state_(2), state_(4), state_(1), state_(3), state_(5));
   }
 
   void predict()
   {
     rclcpp::Time current_time = this->now();
-    double dt = (current_time - last_time_).seconds();
+    double dt = (current_time - last_time_).seconds(); // Time difference from last update to now
     last_time_ = current_time;
 
     if (dt <= 0 || dt > 1.0) {  // Sanity check for dt
@@ -221,15 +218,12 @@ private:
     double omega = state_(5);
 
     // Update state transition matrix with current dt
-    // Using linear approximation: cos(theta) ≈ 1, sin(theta) ≈ 0 for small angles
+    // Using linear approximation: cos(theta) ~ 1, sin(theta) ~ 0 for small angles
     A_ = Eigen::MatrixXd::Identity(STATE_SIZE, STATE_SIZE);
     A_(0, 1) = dt;  // x += vx * dt
     A_(2, 3) = dt;  // y += vy * dt
     A_(4, 5) = dt;  // theta += omega * dt
   
-
-    // Update control input matrix
-    // Using linear approximation for small angles
     B_ = Eigen::MatrixXd::Zero(STATE_SIZE, CONTROL_SIZE);
     B_(1, 0) = 1.0;  // vx = v (assuming small angles)
     B_(3, 0) = 0.0;  // vy = 0 (assuming small angles)
@@ -380,7 +374,7 @@ private:
 
     filtered_state_pub_->publish(filtered_odom);
     
-    // Log the filtered state periodically for debugging
+    // Debug logs 
     static int counter = 0;
     if (++counter % 40 == 0) {  // Log every 2 seconds at ~20Hz
       RCLCPP_INFO(this->get_logger(), 
