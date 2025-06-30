@@ -71,6 +71,7 @@
     "random": "cpp",
     "vector": "cpp",
     "chrono": "cpp",
-    "dense": "cpp"
+    "dense": "cpp",
+    "mutex": "cpp"
   }
 }

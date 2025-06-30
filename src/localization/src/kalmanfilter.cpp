@@ -49,7 +49,7 @@ public:
 
     // Create publisher for filtered state (visualization only)
     filtered_state_pub_ = this->create_publisher<nav_msgs::msg::Odometry>(
-      "/filtered_state", 10);
+      "/kf_state", 10);
 
     last_time_ = this->now();
     

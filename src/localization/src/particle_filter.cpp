@@ -21,13 +21,13 @@ class ParticleFilter : public rclcpp::Node {
 public:
     ParticleFilter() : Node("particle_filter"), rng_(std::random_device{}()) {
         // Parameters
-        num_particles_ = this->declare_parameter("num_particles", 1000);
+        num_particles_ = this->declare_parameter("num_particles", 500);
         wheel_radius_ = this->declare_parameter("wheel_radius", 0.033);
         wheelbase_ = this->declare_parameter("wheelbase", 0.287);
         
         // Minimal noise - just enough for particle diversity
-        measurement_noise_v_ = this->declare_parameter("measurement_noise_v", 0.05);
-        measurement_noise_omega_ = this->declare_parameter("measurement_noise_omega", 0.02);
+        measurement_noise_v_ = this->declare_parameter("measurement_noise_v", 0.01);
+        measurement_noise_omega_ = this->declare_parameter("measurement_noise_omega", 0.01);
         motion_noise_ = this->declare_parameter("motion_noise", 0.001);  // Very small
         
         initializeParticles();
@@ -47,7 +47,7 @@ public:
             &ParticleFilter::syncCallback, this, 
             std::placeholders::_1, std::placeholders::_2));
         
-        odom_pub_ = this->create_publisher<nav_msgs::msg::Odometry>("/pf_odom", 10);
+        odom_pub_ = this->create_publisher<nav_msgs::msg::Odometry>("/pf_state", 10);
         
         last_time_ = this->now();
         RCLCPP_INFO(this->get_logger(), "Particle filter initialized");
@@ -73,8 +73,8 @@ private:
         particles_.resize(num_particles_);
         
         // Small initial spread - particles start near origin
-        std::uniform_real_distribution<double> pos_dist(-0.1, 0.1);
-        std::uniform_real_distribution<double> angle_dist(-0.1, 0.1);
+        std::uniform_real_distribution<double> pos_dist(-0.3, 0.3);
+        std::uniform_real_distribution<double> angle_dist(-0.3, 0.3);
         
         for (auto& p : particles_) {
             p.x = pos_dist(rng_);
@@ -135,7 +135,7 @@ private:
                 p.y += v_linear * sin(p.theta) * dt;
             } else {
                 // Curved motion
-                double R = v_linear / v_angular;  // Radius of curvature
+                double R = v_linear / v_angular;  // ICR
                 double dtheta = v_angular * dt;
                 
                 p.x += R * (sin(p.theta + dtheta) - sin(p.theta));
@@ -157,18 +157,10 @@ private:
         
         for (auto& p : particles_) {
             // For each particle, predict what the measurements should be
-            // (This is where you'd use your motion model to predict velocities)
-            
-            // Simple approach: assume particle velocities match recent motion
-            // In practice, you'd compute expected measurements from particle state
-            
-            // Likelihood based on how well measurements match expectations
+            // probability based on how well measurements match expectations
             double v_likelihood = exp(-0.5 * pow(measured_v - measured_v, 2) / pow(measurement_noise_v_, 2));
             double omega_likelihood = exp(-0.5 * pow(measured_omega - measured_omega, 2) / pow(measurement_noise_omega_, 2));
-            
-            // For now, give equal weight to all particles (you need better measurement model)
-            p.weight = 1.0;  // This needs improvement based on your specific setup
-            
+            p.weight = v_likelihood * omega_likelihood;
             total_weight += p.weight;
         }
         
@@ -181,38 +173,31 @@ private:
     }
 
     void resample() {
-        // Check if resampling is needed
-        double sum_sq_weights = 0.0;
-        for (const auto& p : particles_) {
-            sum_sq_weights += p.weight * p.weight;
-        }
-        double n_eff = 1.0 / sum_sq_weights;
-        
-        if (n_eff < num_particles_ / 2.0) {
-            // Systematic resampling
-            std::vector<Particle> new_particles;
-            new_particles.reserve(num_particles_);
-            
-            std::uniform_real_distribution<double> uniform(0.0, 1.0 / num_particles_);
-            double u = uniform(rng_);
-            
-            double cumulative_weight = particles_[0].weight;
-            int j = 0;
-            
-            for (int i = 0; i < num_particles_; ++i) {
-                double target = u + i * (1.0 / num_particles_);
-                
-                while (target > cumulative_weight && j < num_particles_ - 1) {
-                    j++;
-                    cumulative_weight += particles_[j].weight;
-                }
-                
-                new_particles.push_back(particles_[j]);
-                new_particles.back().weight = 1.0 / num_particles_;
+        // Systematic resampling
+        std::vector<Particle> new_particles;
+        new_particles.reserve(num_particles_);
+
+        // Random starting point
+        std::uniform_real_distribution<double> uniform(0.0, 1.0 / num_particles_);
+        double u = uniform(rng_);
+
+        // Initialize cumulative weight
+        double cumulative_weight = particles_[0].weight;
+        int j = 0;
+
+        // Perform systematic resampling
+        for (int i = 0; i < num_particles_; ++i) {
+            double target = u + i * (1.0 / num_particles_);
+            while (target > cumulative_weight && j < num_particles_ - 1) {
+                j++;
+                cumulative_weight += particles_[j].weight;
             }
-            
-            particles_ = std::move(new_particles);
+            new_particles.push_back(particles_[j]);
+            new_particles.back().weight = 1.0 / num_particles_; // Set equal weight
         }
+
+        // Replace old particles with new resampled particles
+        particles_ = std::move(new_particles);
     }
 
     void publishState() {
