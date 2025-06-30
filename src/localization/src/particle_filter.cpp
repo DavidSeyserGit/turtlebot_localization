@@ -26,8 +26,8 @@ public:
         wheelbase_ = this->declare_parameter("wheelbase", 0.287);
         
         // Minimal noise - just enough for particle diversity
-        measurement_noise_v_ = this->declare_parameter("measurement_noise_v", 0.01);
-        measurement_noise_omega_ = this->declare_parameter("measurement_noise_omega", 0.01);
+        measurement_noise_v_ = this->declare_parameter("measurement_noise_v", 0.001);
+        measurement_noise_omega_ = this->declare_parameter("measurement_noise_omega", 0.001);
         motion_noise_ = this->declare_parameter("motion_noise", 0.001);  // Very small
         
         initializeParticles();
@@ -98,6 +98,8 @@ private:
         auto [v_linear, v_angular] = extractVelocities(joint_msg);
         double measured_omega = imu_msg->angular_velocity.z;
         
+        //similar to EKF and KF
+
         predict(dt, v_linear, v_angular);
         update(v_linear, measured_omega);
         resample();
@@ -158,9 +160,9 @@ private:
         for (auto& p : particles_) {
             // For each particle, predict what the measurements should be
             // probability based on how well measurements match expectations
-            double v_likelihood = exp(-0.5 * pow(measured_v - measured_v, 2) / pow(measurement_noise_v_, 2));
-            double omega_likelihood = exp(-0.5 * pow(measured_omega - measured_omega, 2) / pow(measurement_noise_omega_, 2));
-            p.weight = v_likelihood * omega_likelihood;
+            double v_probability = exp(-0.5 * pow(measured_v - measured_v, 2) / pow(measurement_noise_v_, 2));
+            double omega_probability = exp(-0.5 * pow(measured_omega - measured_omega, 2) / pow(measurement_noise_omega_, 2));
+            p.weight = v_probability * omega_probability;
             total_weight += p.weight;
         }
         
