@@ -227,7 +227,7 @@ private:
   
     B_ = Eigen::MatrixXd::Zero(STATE_SIZE, CONTROL_SIZE);
     B_(1, 0) = 1.0;  // vx = v (assuming small angles)
-    B_(3, 0) = 0.0;  // vy = 0 (assuming small angles)
+    B_(3, 0) = 1.0;  // vy = 0 (assuming small angles)
     B_(5, 1) = 1.0;  // omega = omega_cmd
 
     // Store state before prediction for debugging
