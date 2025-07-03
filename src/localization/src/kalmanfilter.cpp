@@ -223,6 +223,7 @@ private:
     A_(0, 1) = dt;  // x += vx * dt
     A_(2, 3) = dt;  // y += vy * dt
     A_(4, 5) = dt;  // theta += omega * dt
+
   
     B_ = Eigen::MatrixXd::Zero(STATE_SIZE, CONTROL_SIZE);
     B_(1, 0) = 1.0;  // vx = v (assuming small angles)
@@ -238,7 +239,7 @@ private:
     // Predict covariance
     covariance_ = A_ * covariance_ * A_.transpose() + Q_;
 
-    normalizeYaw();
+    normalizeYaw(); 
   }
 
   void update(
@@ -249,6 +250,7 @@ private:
       auto wheel_velocities = computeVelocitiesFromWheels(joint_msg);
       double vx_wheels = wheel_velocities.first;   // Forward velocity from wheels
       double vy_wheels = 0.0;                      // Assume no lateral velocity for diff drive robot
+      //assumption is wrong, vy is in the world frame and therefore not zero!!!
 
       // Create measurement vector z_t - velocities from wheel encoders and IMU
       Eigen::VectorXd z_t(MEASUREMENT_SIZE);  // [vx, vy, omega]

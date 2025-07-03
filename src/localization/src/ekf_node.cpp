@@ -195,16 +195,11 @@ private:
         }
     }
     
-    // Differential drive kinematics
+    // Differential drive kinematics - robot frame velocities
     double v_linear = (v_left + v_right) / 2.0;
     double v_angular = (v_right - v_left) / wheelbase_;
     
-    // Convert to global frame velocities
-    double theta = state_(4);  // Current heading
-    double vx_global = v_linear * std::cos(theta);
-    double vy_global = v_linear * std::sin(theta);
-    
-    return std::make_pair(vx_global, vy_global);
+    return std::make_pair(v_linear, v_angular);
   } 
 
   void synchronizedCallback(
@@ -229,14 +224,16 @@ private:
       const sensor_msgs::msg::Imu::ConstSharedPtr imu_msg,
       const sensor_msgs::msg::JointState::ConstSharedPtr joint_msg) {
     
-    // Compute initial velocities from wheel encoders
+    // Compute initial velocities from wheel encoders (robot frame)
     auto wheel_velocities = computeVelocitiesFromWheels(joint_msg);
+    double v_robot = wheel_velocities.first;
+    double omega_wheels = wheel_velocities.second;
     
-    // Initialize state with zero position and current velocities
+    // Initialize state with zero position and current velocities in global frame
     state_ << 0.0,                              // 0: x position (start at origin)
-             wheel_velocities.first,            // 1: vx velocity (from wheels)
+             v_robot,                           // 1: vx velocity (robot frame v converted to global)
              0.0,                               // 2: y position (start at origin)
-             wheel_velocities.second,           // 3: vy velocity (from wheels)
+             0.0,                               // 3: vy velocity (zero for forward motion)
              0.0,                               // 4: theta (start aligned with x-axis)
              imu_msg->angular_velocity.z;       // 5: omega (from IMU)
 
@@ -272,20 +269,48 @@ private:
     double theta = state_(4);
     double omega = state_(5);
 
-    // Simple constant velocity prediction
+    // Non-linear motion model using control inputs
+    // For differential drive robot, we use the commanded velocities
+    double v_cmd = u_(0);  // Linear velocity command
+    double omega_cmd = u_(1);  // Angular velocity command
+    
+    // Non-linear state transition
     Eigen::VectorXd x_pred = Eigen::VectorXd::Zero(STATE_SIZE);
-    x_pred(0) = x + vx * dt;              // x = x + vx*dt
-    x_pred(1) = vx;                       // vx stays same (updated by measurement)
-    x_pred(2) = y + vy * dt;              // y = y + vy*dt  
-    x_pred(3) = vy;                       // vy stays same (updated by measurement)
-    x_pred(4) = theta + omega * dt;       // theta = theta + omega*dt
-    x_pred(5) = omega;                    // omega stays same (updated by measurement)
+    
+    if (std::abs(omega_cmd) > 1e-6) {
+        // Non-zero angular velocity - curved motion
+        x_pred(0) = x + (v_cmd / omega_cmd) * (std::sin(theta + omega_cmd * dt) - std::sin(theta));
+        x_pred(1) = v_cmd * std::cos(theta + omega_cmd * dt);
+        x_pred(2) = y + (v_cmd / omega_cmd) * (-std::cos(theta + omega_cmd * dt) + std::cos(theta));
+        x_pred(3) = v_cmd * std::sin(theta + omega_cmd * dt);
+        x_pred(4) = theta + omega_cmd * dt;
+        x_pred(5) = omega_cmd;
+    } else {
+        // Zero angular velocity - straight line motion
+        x_pred(0) = x + v_cmd * std::cos(theta) * dt;
+        x_pred(1) = v_cmd * std::cos(theta);
+        x_pred(2) = y + v_cmd * std::sin(theta) * dt;
+        x_pred(3) = v_cmd * std::sin(theta);
+        x_pred(4) = theta;
+        x_pred(5) = 0.0;
+    }
 
-    // Simple Jacobian for constant velocity model
+    // Compute Jacobian of the non-linear motion model
     Eigen::MatrixXd G = Eigen::MatrixXd::Identity(STATE_SIZE, STATE_SIZE);
-    G(0,1) = dt;  // ∂x/∂vx = dt
-    G(2,3) = dt;  // ∂y/∂vy = dt  
-    G(4,5) = dt;  // ∂θ/∂ω = dt
+    
+    if (std::abs(omega_cmd) > 1e-6) {
+        // Jacobian for curved motion
+        G(0, 4) = (v_cmd / omega_cmd) * (std::cos(theta + omega_cmd * dt) - std::cos(theta));  // ∂x/∂θ
+        G(1, 4) = -v_cmd * std::sin(theta + omega_cmd * dt);  // ∂vx/∂θ
+        G(2, 4) = (v_cmd / omega_cmd) * (std::sin(theta + omega_cmd * dt) - std::sin(theta));  // ∂y/∂θ
+        G(3, 4) = v_cmd * std::cos(theta + omega_cmd * dt);   // ∂vy/∂θ
+    } else {
+        // Jacobian for straight line motion
+        G(0, 4) = -v_cmd * std::sin(theta) * dt;  // ∂x/∂θ
+        G(1, 4) = -v_cmd * std::sin(theta);       // ∂vx/∂θ
+        G(2, 4) = v_cmd * std::cos(theta) * dt;   // ∂y/∂θ
+        G(3, 4) = v_cmd * std::cos(theta);        // ∂vy/∂θ
+    }
 
     // Update state and covariance
     state_ = x_pred;
@@ -301,29 +326,35 @@ private:
   void update(const sensor_msgs::msg::Imu::ConstSharedPtr imu_msg,
               const sensor_msgs::msg::JointState::ConstSharedPtr joint_msg) {
     
-    // Compute velocities from wheel encoder data
+    // Compute velocities from wheel encoder data (robot frame)
     auto wheel_velocities = computeVelocitiesFromWheels(joint_msg);
-    double vx_wheels = wheel_velocities.first;   // Global vx from wheels
-    double vy_wheels = wheel_velocities.second;  // Global vy from wheels
+    double v_robot = wheel_velocities.first;   // Linear velocity in robot frame
+    double omega_wheels = wheel_velocities.second;  // Angular velocity from wheels
     double omega_imu = imu_msg->angular_velocity.z; // Angular velocity from IMU
 
-    // Measurement vector z = [vx_wheels, vy_wheels, omega_imu]
+    // Current state for measurement model
+    double theta = state_(4);
+    
+    // Non-linear measurement model: convert robot frame velocities to global frame
+    // Measurement vector z = [vx_global, vy_global, omega_imu]
     Eigen::VectorXd z(MEASUREMENT_SIZE);
-    z << vx_wheels,
-         vy_wheels,
-         omega_imu;
+    z << v_robot * std::cos(theta),  // vx in global frame
+         v_robot * std::sin(theta),  // vy in global frame
+         omega_imu;                  // omega from IMU
 
-    // Predicted measurement h(x) = [vx, vy, omega] from state
+    // Predicted measurement h(x) = [vx_pred, vy_pred, omega_pred] from state
     Eigen::VectorXd h_pred(MEASUREMENT_SIZE);
     h_pred << state_(1),  // predicted vx
               state_(3),  // predicted vy
               state_(5);  // predicted omega
 
-    // Measurement Jacobian H - directly observe velocities
+    // Non-linear measurement Jacobian H
     Eigen::MatrixXd H = Eigen::MatrixXd::Zero(MEASUREMENT_SIZE, STATE_SIZE);
-    H(0, 1) = 1.0;  // observe vx
-    H(1, 3) = 1.0;  // observe vy
-    H(2, 5) = 1.0;  // observe omega
+    H(0, 1) = 1.0;  // ∂vx_meas/∂vx = 1
+    H(0, 4) = -v_robot * std::sin(theta);  // ∂vx_meas/∂θ = -v_robot * sin(θ)
+    H(1, 3) = 1.0;  // ∂vy_meas/∂vy = 1
+    H(1, 4) = v_robot * std::cos(theta);   // ∂vy_meas/∂θ = v_robot * cos(θ)
+    H(2, 5) = 1.0;  // ∂omega_meas/∂omega = 1
 
     // Innovation
     Eigen::VectorXd innovation = z - h_pred;
@@ -341,8 +372,8 @@ private:
     normalizeAngle();
     
     RCLCPP_DEBUG(this->get_logger(), 
-                 "Updated with measurements: vx_wheels=%.3f, vy_wheels=%.3f, omega_imu=%.3f",
-                 z(0), z(1), z(2));
+                 "Updated with measurements: v_robot=%.3f, omega_wheels=%.3f, omega_imu=%.3f",
+                 v_robot, omega_wheels, omega_imu);
   }
 
   void normalizeAngle() {
